@@ -1,3 +1,6 @@
+# TOPIC dataman_request
+# QUEUE_SIZE 8
+
 uint64 timestamp	# time since system start (microseconds)
 
 uint8 client_id

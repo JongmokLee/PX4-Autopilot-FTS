@@ -82,7 +82,7 @@ for constant in spec.constants:
 
 @[for topic in topics]@
 static_assert(static_cast<orb_id_size_t>(ORB_ID::@topic) == @(all_topics.index(topic)), "ORB_ID index mismatch");
-ORB_DEFINE(@topic, struct @uorb_struct, @(struct_size-padding_end_size), @(message_hash)u, static_cast<orb_id_size_t>(ORB_ID::@topic), @queue_length);
+ORB_DEFINE(@topic, struct @uorb_struct, @(struct_size-padding_end_size), @(message_hash)u, static_cast<orb_id_size_t>(ORB_ID::@topic), @('8' if topic == 'dataman_request' else queue_length));
 @[end for]
 
 void print_message(const orb_metadata *meta, const @uorb_struct& message)

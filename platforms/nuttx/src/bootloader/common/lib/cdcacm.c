@@ -133,3 +133,8 @@ void usb_cout(uint8_t *buf, unsigned len)
 
 #endif
 }
+
+int usb_connected(void)
+{
+    return (g_usb_df >= 0);
+}

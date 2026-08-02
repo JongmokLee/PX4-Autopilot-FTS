@@ -61,6 +61,7 @@
 
 #include <sys/boardctl.h>
 
+extern "C" int serdis_main(int argc, char *argv[]);
 using namespace time_literals;
 
 static pthread_mutex_t shutdown_mutex =
@@ -182,6 +183,14 @@ static void shutdown_worker(void *arg)
 			PX4_INFO_RAW("Reboot NOW.");
 
 			if (shutdown_args & SHUTDOWN_ARG_TO_BOOTLOADER) {
+#if defined(__PX4_NUTTX)
+				/* Disconnect USB CDC ACM before rebooting to bootloader so QGC
+				* does not keep talking to the running app CDC port.
+				*/
+				int ret = serdis_main(0, nullptr);
+				PX4_INFO("serdis before bootloader reboot: %d", ret);
+				px4_usleep(1000000);
+#endif			
 				boardctl(BOARDIOC_RESET, (uintptr_t)REBOOT_TO_BOOTLOADER);
 
 			} else if (shutdown_args & SHUTDOWN_ARG_TO_ISP) {

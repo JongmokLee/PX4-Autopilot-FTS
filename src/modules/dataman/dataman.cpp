@@ -57,6 +57,11 @@
 #include <uORB/topics/dataman_request.h>
 #include <uORB/topics/dataman_response.h>
 
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <inttypes.h>
 #include "dataman.h"
 
 __BEGIN_DECLS
@@ -325,6 +330,9 @@ _file_write(dm_item_t item, unsigned index, const void *buf, size_t count)
 
 	/* Make sure data is written to physical media */
 	fsync(dm_operations_data.file.fd);
+	//PX4_INFO("dm wr c: before fsync");
+	//int sret = fsync(dm_operations_data.file.fd);
+	//PX4_INFO("dm wr d: fsync ret=%d errno=%d", sret, errno);
 
 	/* All is well... return the number of user data written */
 	return count - DM_SECTOR_HDR_SIZE;
@@ -574,7 +582,7 @@ _file_initialize(unsigned max_offset)
 	g_dm_ops->read(DM_KEY_COMPAT, 0, &compat_state, sizeof(compat_state));
 
 	dm_operations_data.silence = false;
-
+	
 	if (!file_existed || (compat_state.key != DM_COMPAT_KEY)) {
 
 		/* Write current compat info */
@@ -740,7 +748,21 @@ task_main(int argc, char *argv[])
 
 				dataman_request_s request;
 				orb_copy(ORB_ID(dataman_request), dataman_request_sub, &request);
-
+				
+				/*
+				//BOB - 20260410 -debug
+				PX4_INFO("dm worker: req recv type=%" PRIu8 " item=%" PRIu8
+					" index=%" PRIu32 " client=%" PRIu8
+					" len=%" PRIu32 " ts=%llu",
+					request.request_type,
+					request.item,
+					request.index,
+					request.client_id,
+					request.data_length,
+					(unsigned long long)request.timestamp);
+				//EOB - 20260410 -debug
+				*/
+				
 				dataman_response_s response{};
 				response.client_id = request.client_id;
 				response.request_type = request.request_type;
@@ -820,6 +842,21 @@ task_main(int argc, char *argv[])
 				}
 
 				response.timestamp = hrt_absolute_time();
+				
+				/*
+				//BOB - 20260410 - debug
+				PX4_INFO("dm worker: resp pub task=%s req_ts=%llu resp_ts=%llu  type=%u item=%u index=%lu client=%u  status=%llu",
+					px4_get_taskname(),
+					(unsigned long long)request.timestamp,
+					(unsigned long long)response.timestamp,
+					(unsigned)response.request_type,
+					(unsigned)response.item,
+					(unsigned long)response.index,
+					(unsigned)response.client_id,
+					(unsigned long long)response.status);
+				//EOB - 20260410 - debug
+				*/
+				
 				dataman_response_pub.publish(response);
 			}
 		}
@@ -857,7 +894,7 @@ start()
 
 	/* start the worker thread with low priority for disk IO */
 	if (px4_task_spawn_cmd("dataman", SCHED_DEFAULT, SCHED_PRIORITY_DEFAULT - 10,
-			       PX4_STACK_ADJUSTED(TASK_STACK_SIZE), task_main,
+			       PX4_STACK_ADJUSTED(TASK_STACK_SIZE + 1024), task_main,
 			       nullptr) < 0) {
 		px4_sem_destroy(&g_init_sema);
 		PX4_ERR("task start failed");

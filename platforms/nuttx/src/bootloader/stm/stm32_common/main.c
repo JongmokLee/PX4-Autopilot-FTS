@@ -639,8 +639,15 @@ arch_do_jump(const uint32_t *app_base)
 int
 bootloader_main(void)
 {
+	//BOB - original code
+	//bool try_boot = true;			/* try booting before we drop to the bootloader */
+	//unsigned timeout = BOOTLOADER_DELAY;	/* if nonzero, drop out of the bootloader after this time */
+	//EOB - original code
+	
+	//BOB - modified code
 	bool try_boot = true;			/* try booting before we drop to the bootloader */
 	unsigned timeout = BOOTLOADER_DELAY;	/* if nonzero, drop out of the bootloader after this time */
+	//EOB - original code
 
 	/* Enable the FPU before we hit any FP instructions */
 	SCB_CPACR |= ((3UL << 10 * 2) | (3UL << 11 * 2)); /* set CP10 Full Access and set CP11 Full Access */
@@ -657,6 +664,9 @@ bootloader_main(void)
 	}
 
 #endif
+
+	uint32_t rtc_sig = board_get_rtc_signature();
+    bool force_bootloader = (rtc_sig == BOOT_RTC_SIGNATURE);
 
 	/* do board-specific initialisation */
 	board_init();
@@ -720,6 +730,7 @@ bootloader_main(void)
 	 */
 	if (board_test_force_pin()) {
 		try_boot = false;
+		timeout = 0;
 	}
 
 #if INTERFACE_USB
@@ -731,11 +742,14 @@ bootloader_main(void)
 	 * If the force-bootloader pins are tied, we will stay here until they are removed and
 	 * we then time out.
 	 */
+
+/*
+//BOB - original code	
 #if defined(BOARD_VBUS)
 
 	if (px4_arch_gpioread(BOARD_VBUS) != 0) {
 		usb_connected = true;
-		/* don't try booting before we set up the bootloader */
+		// don't try booting before we set up the bootloader
 		try_boot = false;
 	}
 
@@ -743,6 +757,31 @@ bootloader_main(void)
 	try_boot = false;
 
 #endif
+//EOB - original code
+*/
+
+//BOB - modified code	 
+#if defined(BOARD_VBUS)
+
+	if (px4_arch_gpioread(BOARD_VBUS) != 0) {
+		usb_connected = true;
+		// don't try booting before we set up the bootloader
+		if (!force_bootloader) {
+            try_boot = false;
+            timeout = 3000;
+        }
+	}
+
+#else
+	usb_connected = true;
+
+	//if (!force_bootloader) {
+        try_boot = false;
+        timeout = 3000;
+    //}
+#endif
+//EOB - modified code
+
 #endif
 
 #if INTERFACE_USART
@@ -757,27 +796,30 @@ bootloader_main(void)
 	 */
 	if (board_test_usart_receiving_break()) {
 		try_boot = false;
+		timeout = 0;
 	}
 
 #endif
 
 	/* Try to boot the app if we think we should just go straight there */
+	
 	if (try_boot) {
-
-		/* set the boot-to-bootloader flag so that if boot fails on reset we will stop here */
+		// 20260317 - temporarily commented to test boot sequence
+		// set the boot-to-bootloader flag so that if boot fails on reset we will stop here
 #ifdef BOARD_BOOT_FAIL_DETECT
 		board_set_rtc_signature(BOOT_RTC_SIGNATURE);
 #endif
 
-		/* try to boot immediately */
+		// try to boot immediately
 		jump_to_app();
 
 		// If it failed to boot, reset the boot signature and stay in bootloader
 		board_set_rtc_signature(BOOT_RTC_SIGNATURE);
 
-		/* booting failed, stay in the bootloader forever */
+		// booting failed, stay in the bootloader forever
 		timeout = 0;
 	}
+
 
 
 	/* start the interface */

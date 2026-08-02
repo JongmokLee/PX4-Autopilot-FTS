@@ -36,6 +36,12 @@
  */
 
 #include <dataman_client/DatamanClient.hpp>
+#include <inttypes.h>
+#include <drivers/drv_hrt.h>
+#include <px4_platform_common/tasks.h>
+#include <lib/perf/perf_counter.h>
+#include <px4_platform_common/log.h>
+#include <uORB/Publication.hpp>
 
 DatamanClient::DatamanClient()
 {
@@ -57,17 +63,37 @@ DatamanClient::DatamanClient()
 
 		hrt_abstime timestamp = hrt_absolute_time();
 
-		dataman_request_s request;
+		dataman_request_s request{};
 		request.timestamp = timestamp;
 		request.request_type = DM_GET_ID;
 		request.client_id = CLIENT_ID_NOT_SET;
-
+		
+		/*
+		//BOB - 20260410 - debug
+		PX4_INFO("dm client ctor: GET_ID send this=%p task=%s ts=%llu type=%u item=%u index=%lu len=%lu client=%u",
+         this,
+         px4_get_taskname(),
+         (unsigned long long)request.timestamp,
+         (unsigned)request.request_type,
+         (unsigned)request.item,
+         (unsigned long)request.index,
+         (unsigned long)request.data_length,
+         (unsigned)request.client_id); 
+		//EOB - 20260410 - debug
+		*/
+		
 		bool success = syncHandler(request, response, timestamp, 1000_ms);
 
 		if (success && (response.client_id > CLIENT_ID_NOT_SET)) {
 
 			_client_id = response.client_id;
-
+			
+			/*
+			//BOB - 20260410 - debug
+			PX4_INFO("dm client ctor: this=%p assigned client_id=%u module=%s",
+				this, _client_id, px4_get_taskname());
+			//EOB - 20260410 - debug
+			*/
 		} else {
 			PX4_ERR("Failed to get client ID!");
 		}
@@ -89,48 +115,193 @@ bool DatamanClient::syncHandler(const dataman_request_s &request, dataman_respon
 	bool response_received = false;
 	int32_t ret = 0;
 	hrt_abstime time_elapsed = hrt_elapsed_time(&start_time);
+
 	perf_begin(_sync_perf);
+	
+	/*
+	//BOB - 20260410 - debug
+	PX4_INFO("dm client: req pub this=%p task=%s req[c=%llu t=%llu i=%llu idx=%llu len=%llu ts=%llu]",
+		 this,
+		 px4_get_taskname(),
+		 (unsigned long long)request.client_id,
+		 (unsigned long long)request.request_type,
+		 (unsigned long long)request.item,
+		 (unsigned long long)request.index,
+		 (unsigned long long)request.data_length,
+		 (unsigned long long)request.timestamp);
+	//EOB - 20260410 - debug
+	*/
+	
 	_dataman_request_pub.publish(request);
 
 	while (!response_received && (time_elapsed < timeout)) {
 
-		uint32_t timeout_ms = 100;
+		// 짧게 poll 반복하면서 응답을 계속 drain
+		const uint32_t timeout_ms = 100;
 		ret = px4_poll(&_fds, 1, timeout_ms);
 
 		if (ret < 0) {
-			PX4_ERR("px4_poll returned error: %" PRIu32, ret);
+			/*
+			//BOB - 20260410 - debug
+			PX4_ERR("dm client: px4_poll error this=%p task=%s ret=%ld req[c=%llu t=%llu i=%llu idx=%llu]",
+				this,
+				px4_get_taskname(),
+				(long)ret,
+				(unsigned long long)request.client_id,
+				(unsigned long long)request.request_type,
+				(unsigned long long)request.item,
+				(unsigned long long)request.index);
+			//EOB - 20260410 - debug
+			*/
 			break;
 
 		} else if (ret == 0) {
-
-			// No response received, send new request
-			_dataman_request_pub.publish(request);
+			// timeout window 내에서는 재전송하지 않고 계속 기다림
+			time_elapsed = hrt_elapsed_time(&start_time);
+			continue;
 
 		} else {
+			if (!(_fds.revents & POLLIN)) {
+				time_elapsed = hrt_elapsed_time(&start_time);
+				continue;
+			}
 
 			bool updated = false;
 			orb_check(_dataman_response_sub, &updated);
 
-			if (updated) {
+			// queue에 쌓인 응답을 가능한 만큼 모두 읽는다
+			while (updated) {
 				orb_copy(ORB_ID(dataman_response), _dataman_response_sub, &response);
 
-				if (response.client_id == request.client_id) {
+				// 1) 현재 요청 시작 시각보다 오래된 응답은 버림
+				if (response.timestamp < start_time) {
+					/*
+					//BOB - 20260410 - debug
+					PX4_WARN("dm client: stale resp drop this=%p task=%s resp_ts=%llu start_ts=%llu got[c=%llu t=%llu i=%llu idx=%llu st=%llu]",
+						 this,
+						 px4_get_taskname(),
+						 (unsigned long long)response.timestamp,
+						 (unsigned long long)start_time,
+						 (unsigned long long)response.client_id,
+						 (unsigned long long)response.request_type,
+						 (unsigned long long)response.item,
+						 (unsigned long long)response.index,
+						 (unsigned long long)response.status);
+					//EOB - 20260410 - debug
+					*/
+					orb_check(_dataman_response_sub, &updated);
+					continue;
+				}
 
+				/*
+				//BOB - 20260410 - debug
+				// 2) stale이 아닌 응답만 기존 로직으로 처리
+				PX4_INFO("dm client: resp recv this=%p task=%s got[c=%llu t=%llu i=%llu idx=%llu st=%llu ts=%llu] expect[c=%llu t=%llu i=%llu idx=%llu]",
+					 this,
+					 px4_get_taskname(),
+					 (unsigned long long)response.client_id,
+					 (unsigned long long)response.request_type,
+					 (unsigned long long)response.item,
+					 (unsigned long long)response.index,
+					 (unsigned long long)response.status,
+					 (unsigned long long)response.timestamp,
+					 (unsigned long long)request.client_id,
+					 (unsigned long long)request.request_type,
+					 (unsigned long long)request.item,
+					 (unsigned long long)request.index);
+				//EOB - 20260410 - debug
+				*/
+				
+				if (response.client_id == request.client_id) {
 					if ((response.request_type == request.request_type) &&
-					    (response.item == request.item) &&
-					    (response.index == request.index)) {
+						(response.item == request.item) &&
+						(response.index == request.index)) {
+						
+						/*
+						//BOB - 20260410 - debug
+						PX4_INFO("dm client: resp match this=%p task=%s c=%llu t=%llu i=%llu idx=%llu st=%llu",
+							 this,
+							 px4_get_taskname(),
+							 (unsigned long long)response.client_id,
+							 (unsigned long long)response.request_type,
+							 (unsigned long long)response.item,
+							 (unsigned long long)response.index,
+							 (unsigned long long)response.status);
+						//EOB - 20260410 - debug
+						*/
+						
 						response_received = true;
 						break;
+
+					} else {
+						/*
+						//BOB - 20260410 - debug
+						PX4_WARN("dm client: resp same-client mismatch this=%p task=%s got[c=%llu t=%llu i=%llu idx=%llu st=%llu] expect[c=%llu t=%llu i=%llu idx=%llu]",
+							 this,
+							 px4_get_taskname(),
+							 (unsigned long long)response.client_id,
+							 (unsigned long long)response.request_type,
+							 (unsigned long long)response.item,
+							 (unsigned long long)response.index,
+							 (unsigned long long)response.status,
+							 (unsigned long long)request.client_id,
+							 (unsigned long long)request.request_type,
+							 (unsigned long long)request.item,
+							 (unsigned long long)request.index);
+						//EOB - 20260410 - debug
+						*/
 					}
 
 				} else if (request.client_id == CLIENT_ID_NOT_SET) {
-
-					// validate timestamp from response.data
 					if (0 == memcmp(&(request.timestamp), &(response.data), sizeof(hrt_abstime))) {
+						/*
+						//BOB - 20260410 - debug
+						PX4_INFO("dm client: resp match get-id this=%p task=%s assigned_client=%llu ts=%llu",
+							 this,
+							 px4_get_taskname(),
+							 (unsigned long long)response.client_id,
+							 (unsigned long long)response.timestamp);
+						//EOB - 20260410 - debug
+						*/
 						response_received = true;
 						break;
+
+					} else {
+						/*
+						//BOB - 20260410 - debug
+						PX4_WARN("dm client: resp get-id mismatch this=%p task=%s got[c=%llu ts=%llu]",
+							 this,
+							 px4_get_taskname(),
+							 (unsigned long long)response.client_id,
+							 (unsigned long long)response.timestamp);
+						//EOB - 20260410 - debug
+						*/
 					}
+
+				} else {
+					/*
+					//BOB - 20260410 - debug
+					PX4_WARN("dm client: resp other-client this=%p task=%s got[c=%llu t=%llu i=%llu idx=%llu st=%llu] expect[c=%llu t=%llu i=%llu idx=%llu]",
+						 this,
+						 px4_get_taskname(),
+						 (unsigned long long)response.client_id,
+						 (unsigned long long)response.request_type,
+						 (unsigned long long)response.item,
+						 (unsigned long long)response.index,
+						 (unsigned long long)response.status,
+						 (unsigned long long)request.client_id,
+						 (unsigned long long)request.request_type,
+						 (unsigned long long)request.item,
+						 (unsigned long long)request.index);
+					//EOB - 20260410 - debug
+					*/
 				}
+
+				orb_check(_dataman_response_sub, &updated);
+			}
+
+			if (response_received) {
+				break;
 			}
 		}
 
@@ -140,7 +311,16 @@ bool DatamanClient::syncHandler(const dataman_request_s &request, dataman_respon
 	perf_end(_sync_perf);
 
 	if (!response_received && ret >= 0) {
-		PX4_ERR("timeout after %" PRIu32 " ms!", static_cast<uint32_t>(timeout / 1000));
+		PX4_ERR("dm client: timeout after %llu ms this=%p task=%s req[c=%llu t=%llu i=%llu idx=%llu len=%llu ts=%llu]",
+			(unsigned long long)(timeout / 1000),
+			this,
+			px4_get_taskname(),
+			(unsigned long long)request.client_id,
+			(unsigned long long)request.request_type,
+			(unsigned long long)request.item,
+			(unsigned long long)request.index,
+			(unsigned long long)request.data_length,
+			(unsigned long long)request.timestamp);
 	}
 
 	return response_received;
@@ -159,7 +339,7 @@ bool DatamanClient::readSync(dm_item_t item, uint32_t index, uint8_t *buffer, ui
 
 	hrt_abstime timestamp = hrt_absolute_time();
 
-	dataman_request_s request;
+	dataman_request_s request{};
 	request.timestamp = timestamp;
 	request.index = index;
 	request.data_length = length;
@@ -167,6 +347,20 @@ bool DatamanClient::readSync(dm_item_t item, uint32_t index, uint8_t *buffer, ui
 	request.request_type = DM_READ;
 	request.item = static_cast<uint8_t>(item);
 
+	/*
+	//BOB - 20260410 - debug
+    PX4_INFO("dm client: READ send this=%p task=%s ts=%llu type=%u item=%u index=%lu len=%lu client=%u",
+         this,
+         px4_get_taskname(),
+         (unsigned long long)request.timestamp,
+         (unsigned)request.request_type,
+         (unsigned)request.item,
+         (unsigned long)request.index,
+         (unsigned long)request.data_length,
+         (unsigned)request.client_id);
+	//EOB - 20260410 - debug
+	*/
+	
 	dataman_response_s response{};
 	bool success = syncHandler(request, response, timestamp, timeout);
 
@@ -199,7 +393,7 @@ bool DatamanClient::writeSync(dm_item_t item, uint32_t index, uint8_t *buffer, u
 
 	hrt_abstime timestamp = hrt_absolute_time();
 
-	dataman_request_s request;
+	dataman_request_s request{};
 	request.timestamp = timestamp;
 	request.index = index;
 	request.data_length = length;
@@ -208,7 +402,21 @@ bool DatamanClient::writeSync(dm_item_t item, uint32_t index, uint8_t *buffer, u
 	request.item = static_cast<uint8_t>(item);
 
 	memcpy(request.data, buffer, length);
-
+	
+	/*
+	//BOB - 20260410 - debug
+	PX4_INFO("dm client: WRITE send this=%p task=%s ts=%llu type=%u item=%u index=%lu len=%lu client=%u",
+         this,
+         px4_get_taskname(),
+         (unsigned long long)request.timestamp,
+         (unsigned)request.request_type,
+         (unsigned)request.item,
+         (unsigned long)request.index,
+         (unsigned long)request.data_length,
+         (unsigned)request.client_id);
+	//EOB - 20260410 - debug
+	*/
+	
 	dataman_response_s response{};
 	bool success = syncHandler(request, response, timestamp, timeout);
 
@@ -233,12 +441,26 @@ bool DatamanClient::clearSync(dm_item_t item, hrt_abstime timeout)
 
 	hrt_abstime timestamp = hrt_absolute_time();
 
-	dataman_request_s request;
+	dataman_request_s request{};
 	request.timestamp = timestamp;
 	request.client_id = _client_id;
 	request.request_type = DM_CLEAR;
 	request.item = static_cast<uint8_t>(item);
-
+	
+	/*
+	//BOB - 20260410 - debug
+    PX4_INFO("dm client: CLEAR send this=%p task=%s ts=%llu type=%u item=%u index=%lu len=%lu client=%u",
+         this,
+         px4_get_taskname(),
+         (unsigned long long)request.timestamp,
+         (unsigned)request.request_type,
+         (unsigned)request.item,
+         (unsigned long)request.index,
+         (unsigned long)request.data_length,
+         (unsigned)request.client_id);
+	//EOB - 20260410 - debug
+	*/
+	
 	dataman_response_s response{};
 	bool success = syncHandler(request, response, timestamp, timeout);
 
@@ -612,6 +834,12 @@ bool DatamanCache::writeWait(dm_item_t item, uint32_t index, uint8_t *buffer, ui
 
 void DatamanCache::update()
 {
+	/*
+	//BOB - 20260410 - debug
+	return;
+	//EOB - 20260410 - debug
+	*/
+	
 	if (_item_counter > 0) {
 
 		_client.update();

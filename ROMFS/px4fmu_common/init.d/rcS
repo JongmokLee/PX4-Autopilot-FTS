@@ -531,12 +531,16 @@ else
 	# Manages USB interface
 	if param greater -s SYS_USB_AUTO -1
 	then
-		if ! cdcacm_autostart start
-		then
-			sercon
-			echo "Starting MAVLink on /dev/ttyACM0"
-			mavlink start -d /dev/ttyACM0
-		fi
+        sercon
+        usleep 500000
+
+        if [ -c /dev/ttyACM0 ]
+        then
+                echo "Starting MAVLink on /dev/ttyACM0"
+                mavlink start -d /dev/ttyACM0 -b 57600 -m onboard
+        else
+                echo "USB CDC not ready: /dev/ttyACM0 missing"
+        fi
 	fi
 
 	#

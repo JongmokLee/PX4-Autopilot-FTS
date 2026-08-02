@@ -650,15 +650,21 @@ bootloader(unsigned timeout)
 		led_off(LED_ACTIVITY);
 
 		do {
-			/* if we have a timeout and the timer has expired, return now */
-			if (timeout && !timer[TIMER_BL_WAIT]) {
-				return;
-			}
 
-			/* try to get a byte from the host */
-			c = cin_wait(0);
+#if INTERFACE_USB
+		/* If USB CDC host opened the device, restart bootloader timeout */
+		if (timeout && usb_connected()) {
+			timer[TIMER_BL_WAIT] = timeout;
+		}
+#endif
 
-		} while (c < 0);
+		if (timeout && !timer[TIMER_BL_WAIT]) {
+			return;
+		}
+
+    c = cin_wait(0);
+
+} while (c < 0);
 
 		led_on(LED_ACTIVITY);
 
